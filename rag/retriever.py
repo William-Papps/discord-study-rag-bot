@@ -70,7 +70,15 @@ class RAGPipeline:
 
     def answer_question(self, question: str, channel_id: int | None = None) -> RAGAnswer:
         retrieved = self.retriever.retrieve(question, channel_id=channel_id)
-        if len(retrieved) < self.min_results:
+        return self.answer_from_chunks(question, retrieved)
+
+    def answer_from_chunks(
+        self,
+        question: str,
+        retrieved: list[RetrievedChunk],
+        require_min_results: bool = True,
+    ) -> RAGAnswer:
+        if not retrieved or (require_min_results and len(retrieved) < self.min_results):
             return RAGAnswer(
                 answer=REFUSAL_MESSAGE,
                 refused=True,

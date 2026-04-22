@@ -505,6 +505,7 @@ class ChunkRepository:
             f"""
             SELECT
                 c.chunk_id,
+                c.channel_id,
                 c.channel_name,
                 c.category_name,
                 c.chunk_text,
@@ -526,6 +527,7 @@ class ChunkRepository:
         references = [
             SourceReference(
                 chunk_id=str(row["chunk_id"]),
+                channel_id=int(row["channel_id"]),
                 channel_name=str(row["channel_name"]),
                 category_name=row["category_name"],
                 timestamp=str(row["timestamp"]),

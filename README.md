@@ -122,7 +122,7 @@ If your notes are screenshots or photos, keep `IMAGE_TEXT_PROVIDER=openai`. Duri
   Incremental sync. It expands the same sources and fetches messages newer than the saved sync cursor for each resolved channel/thread.
 
 - `/ask question:<question>`  
-  Retrieves relevant chunks and answers only from those chunks.
+  Retrieves relevant chunks and answers only from those chunks. If multiple strong sources match, the bot shows a source selector before answering.
 
 - `/askchannel channel:#channel question:<question>`  
   Same as `/ask`, but filters retrieval to one channel.

@@ -116,3 +116,16 @@ def format_retrieved_chunks(chunks: list[RetrievedChunk]) -> str:
             f"{shorten(chunk.text, 500)}"
         )
     return "\n\n".join(lines)
+
+
+def format_source_excerpts(source_label: str, chunks: list[RetrievedChunk]) -> str:
+    if not chunks:
+        return "No synced chunks were found for that selected source."
+
+    lines = [
+        f"**Source excerpts from {source_label}**",
+        "Relevant stored excerpts:",
+    ]
+    for index, chunk in enumerate(chunks[:5], start=1):
+        lines.append(f"{index}. {shorten(chunk.text, 700)}")
+    return "\n\n".join(lines)

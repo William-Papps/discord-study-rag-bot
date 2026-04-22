@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
@@ -32,10 +33,25 @@ class AnswerContext:
     similarity: float
 
 
+@dataclass(frozen=True)
+class SourceSelectionCandidate:
+    source_id: str
+    label: str
+    snippet: str
+    similarity: float
+
+
 class AnswerGenerator(ABC):
     @abstractmethod
     def generate(self, question: str, contexts: list[AnswerContext]) -> GeneratedAnswer:
         raise NotImplementedError
+
+    def choose_competing_sources(
+        self,
+        question: str,
+        candidates: list[SourceSelectionCandidate],
+    ) -> list[str]:
+        return []
 
     def generate_study_question(self, excerpt: str, source_label: str) -> str:
         return f"What information is listed in this source note from {source_label}?"
@@ -81,10 +97,16 @@ class OpenAIAnswerGenerator(AnswerGenerator):
                 {
                     "role": "system",
                     "content": (
-                        "You are a local Discord notes assistant. Answer only from the "
-                        "provided Discord note sources. Do not use outside knowledge. "
-                        "Do not guess. If the sources do not contain enough evidence, "
-                        f"reply exactly: {REFUSAL_MESSAGE}"
+                        "You are a local Discord study-notes assistant. Answer only "
+                        "from the provided Discord note sources. Do not use outside "
+                        "knowledge. Do not guess. Do not debug the user's code, infer "
+                        "causes, generate fixes, write new code, or prescribe how "
+                        "something must be done unless the provided notes explicitly "
+                        "say that. If the user asks why something does not work, what "
+                        "is wrong, or how to fix it, only report the note-backed facts, "
+                        "rules, definitions, examples, or patterns that could help "
+                        "them reason about it. If the notes do not contain enough "
+                        f"evidence, reply exactly: {REFUSAL_MESSAGE}"
                     ),
                 },
                 {
@@ -92,10 +114,13 @@ class OpenAIAnswerGenerator(AnswerGenerator):
                     "content": (
                         f"Question:\n{question}\n\n"
                         f"Discord note sources:\n{context_text}\n\n"
-                        "Write a direct answer grounded only in the sources. "
-                        "Use short bullet points for lists or table items. "
-                        "Do not include source citations in the answer body because "
-                        "the application adds sources separately."
+                        "Write a study-focused answer grounded only in the sources. "
+                        "Phrase uncertain or diagnostic requests as 'The notes say...' "
+                        "or 'Relevant notes...' rather than as a fix. Use short bullet "
+                        "points for lists or table items. Do not add examples, causes, "
+                        "steps, recommendations, or rewritten code unless they appear "
+                        "in the provided notes. Do not include source citations in the "
+                        "answer body because the application adds sources separately."
                     ),
                 },
             ],
@@ -134,6 +159,53 @@ class OpenAIAnswerGenerator(AnswerGenerator):
         )
         question = (response.choices[0].message.content or "").strip()
         return question or super().generate_study_question(excerpt, source_label)
+
+    def choose_competing_sources(
+        self,
+        question: str,
+        candidates: list[SourceSelectionCandidate],
+    ) -> list[str]:
+        if len(candidates) < 2:
+            return []
+
+        candidate_text = "\n\n".join(
+            f"SOURCE_ID: {candidate.source_id}\n"
+            f"LABEL: {candidate.label}\n"
+            f"SIMILARITY: {candidate.similarity:.3f}\n"
+            f"EXCERPT:\n{shorten(candidate.snippet, 650)}"
+            for candidate in candidates[:8]
+        )
+        response = self.client.chat.completions.create(
+            model=self.model,
+            temperature=0,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You decide whether a Discord notes question needs the user "
+                        "to choose between multiple sources. Use only the candidate "
+                        "labels and excerpts. Return JSON only. Return multiple "
+                        "source_ids only when two or more sources are genuinely "
+                        "plausible targets for the user's exact request and answering "
+                        "from all of them would likely mix separate topics/classes. "
+                        "If the request can be answered from the combined retrieved "
+                        "notes, or one source is clearly best, return an empty list."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Question:\n{question}\n\n"
+                        f"Candidate sources:\n{candidate_text}\n\n"
+                        'Return JSON in this exact shape: {"source_ids": ["id1", "id2"]}'
+                    ),
+                },
+            ],
+        )
+        raw = (response.choices[0].message.content or "").strip()
+        selected = _parse_source_ids(raw)
+        valid_ids = {candidate.source_id for candidate in candidates}
+        return [source_id for source_id in selected if source_id in valid_ids]
 
     def evaluate_study_answer(self, question: str, source_answer: str, user_answer: str) -> StudyEvaluation:
         response = self.client.chat.completions.create(
@@ -181,6 +253,21 @@ class ExtractiveAnswerGenerator(AnswerGenerator):
             refused=False,
         )
 
+    def choose_competing_sources(
+        self,
+        question: str,
+        candidates: list[SourceSelectionCandidate],
+    ) -> list[str]:
+        terms = set(_important_terms(question))
+        if not terms:
+            return []
+        selected = [
+            candidate.source_id
+            for candidate in candidates
+            if len(terms.intersection(_important_terms(candidate.snippet))) >= 2
+        ]
+        return selected if len(selected) >= 2 else []
+
 
 STOPWORDS = {
     "about", "after", "again", "also", "and", "are", "because", "been", "but",
@@ -201,6 +288,23 @@ def _important_terms(text: str) -> list[str]:
         if len(terms) >= 20:
             break
     return terms
+
+
+def _parse_source_ids(raw: str) -> list[str]:
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+        if match is None:
+            return []
+        try:
+            data = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return []
+    source_ids = data.get("source_ids") if isinstance(data, dict) else None
+    if not isinstance(source_ids, list):
+        return []
+    return [str(source_id) for source_id in source_ids]
 
 
 def create_answer_generator(settings: Settings) -> AnswerGenerator:

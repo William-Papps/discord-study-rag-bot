@@ -10,11 +10,13 @@ from discord.ext import commands
 from bot.formatting import (
     format_rag_answer,
     format_retrieved_chunks,
+    format_source_excerpts,
     format_status,
-    format_sync_report,
     split_discord_message,
 )
 from rag.answer_generator import REFUSAL_MESSAGE
+from rag.answer_generator import SourceSelectionCandidate
+from rag.retriever import RetrievedChunk
 from services.startup_service import AppContext
 from services.study_service import (
     StudyCard,
@@ -26,6 +28,26 @@ from services.study_service import (
 )
 
 logger = logging.getLogger(__name__)
+
+MAX_SELECTED_SOURCE_CHUNKS = 12
+
+
+def log_sync_report(report: object) -> None:
+    logger.info(
+        "%s sync complete: channels=%s seen=%s stored=%s new=%s updated=%s unchanged=%s "
+        "chunks_created=%s chunks_embedded=%s reindexed=%s repaired_vectors=%s",
+        report.mode,
+        len(report.channels),
+        report.total_messages_seen,
+        report.total_messages_stored,
+        report.total_messages_inserted,
+        report.total_messages_updated,
+        report.total_messages_unchanged,
+        report.indexing.chunks_created,
+        report.indexing.chunks_embedded,
+        report.indexing.channels_reindexed,
+        report.indexing.stale_vectors_repaired,
+    )
 
 
 def create_bot(context: AppContext) -> commands.Bot:
@@ -174,6 +196,221 @@ def create_bot(context: AppContext) -> commands.Bot:
                 view=self,
             )
 
+    class AskSourceSelect(discord.ui.Select):
+        def __init__(
+            self,
+            question: str,
+            grouped_chunks: dict[str, list[RetrievedChunk]],
+            labels: dict[str, str],
+        ) -> None:
+            self.question = question
+            self.grouped_chunks = grouped_chunks
+            self.labels = labels
+            options = [
+                discord.SelectOption(
+                    label=labels[key][:100],
+                    value=key,
+                    description=f"{len(grouped_chunks[key])} matching chunks",
+                )
+                for key in grouped_chunks
+            ][:25]
+            super().__init__(
+                placeholder="Choose which source to answer from",
+                min_values=1,
+                max_values=1,
+                options=options,
+            )
+
+        async def callback(self, interaction: discord.Interaction) -> None:
+            view = self.view
+            if not isinstance(view, AskDisambiguationView):
+                await interaction.response.send_message("This selection expired.", ephemeral=True)
+                return
+            if interaction.user.id != view.user_id:
+                await interaction.response.send_message(
+                    "This source selection belongs to another user.",
+                    ephemeral=True,
+                )
+                return
+
+            selected = self.values[0]
+            selected_chunks = self.grouped_chunks[selected]
+            await interaction.response.defer(thinking=True)
+            chunks = await asyncio.to_thread(
+                expand_selected_source_chunks,
+                int(selected),
+                selected_chunks,
+            )
+            answer = await asyncio.to_thread(
+                context.rag_pipeline.answer_from_chunks,
+                self.question,
+                chunks,
+                False,
+            )
+            for child in view.children:
+                if isinstance(child, discord.ui.Select):
+                    child.disabled = True
+            await interaction.message.edit(
+                content=f"Selected source: {self.labels[selected]}",
+                view=view,
+            )
+            if answer.refused:
+                await send_interaction_chunks(
+                    interaction,
+                    format_source_excerpts(self.labels[selected], chunks),
+                )
+            else:
+                await send_interaction_chunks(interaction, format_rag_answer(answer))
+            view.stop()
+
+    class AskDisambiguationView(discord.ui.View):
+        def __init__(
+            self,
+            user_id: int,
+            question: str,
+            grouped_chunks: dict[str, list[RetrievedChunk]],
+            labels: dict[str, str],
+        ) -> None:
+            super().__init__(timeout=180)
+            self.user_id = user_id
+            self.add_item(AskSourceSelect(question, grouped_chunks, labels))
+
+    async def answer_or_select_source(
+        interaction: discord.Interaction,
+        question: str,
+        channel_id: int | None = None,
+    ) -> None:
+        retrieved = await asyncio.to_thread(
+            context.rag_pipeline.retriever.retrieve,
+            question,
+            channel_id,
+        )
+        grouped_chunks, labels = await asyncio.to_thread(
+            build_source_options,
+            question,
+            retrieved,
+        )
+        if len(grouped_chunks) >= 2:
+            view = AskDisambiguationView(
+                user_id=interaction.user.id,
+                question=question,
+                grouped_chunks=grouped_chunks,
+                labels=labels,
+            )
+            await interaction.followup.send(
+                "I found multiple strong matching sources. Choose which one to answer from:",
+                view=view,
+            )
+            return
+
+        answer = await asyncio.to_thread(
+            context.rag_pipeline.answer_from_chunks,
+            question,
+            retrieved,
+        )
+        if answer.refused and retrieved:
+            await send_interaction_chunks(
+                interaction,
+                format_source_excerpts("retrieved notes", retrieved),
+            )
+        else:
+            await send_interaction_chunks(interaction, format_rag_answer(answer))
+
+    def build_source_options(
+        question: str,
+        retrieved: list[RetrievedChunk],
+    ) -> tuple[dict[str, list[RetrievedChunk]], dict[str, str]]:
+        if len(retrieved) < 2:
+            return {}, {}
+        references = context.chunk_repository.get_source_references(
+            [chunk.chunk_id for chunk in retrieved]
+        )
+        references_by_chunk = {reference.chunk_id: reference for reference in references}
+        groups: dict[str, list[RetrievedChunk]] = {}
+        labels: dict[str, str] = {}
+        best_similarity: dict[str, float] = {}
+        top_similarity = retrieved[0].similarity if retrieved else 0.0
+        for chunk in retrieved:
+            if chunk.similarity < max(context.settings.retrieval_min_similarity, top_similarity - 0.08):
+                continue
+            reference = references_by_chunk.get(chunk.chunk_id)
+            if reference is None:
+                continue
+            key = str(reference.channel_id)
+            label = (
+                f"{reference.category_name} / #{reference.channel_name}"
+                if reference.category_name
+                else f"#{reference.channel_name}"
+            )
+            groups.setdefault(key, []).append(chunk)
+            labels[key] = label
+            best_similarity[key] = max(best_similarity.get(key, 0.0), chunk.similarity)
+
+        if len(groups) < 2:
+            return {}, {}
+
+        candidates = [
+            SourceSelectionCandidate(
+                source_id=key,
+                label=labels[key],
+                snippet="\n\n".join(chunk.text for chunk in chunks[:2]),
+                similarity=best_similarity[key],
+            )
+            for key, chunks in groups.items()
+        ]
+        try:
+            selected_source_ids = context.rag_pipeline.answer_generator.choose_competing_sources(
+                question,
+                candidates,
+            )
+        except Exception:
+            logger.exception("Source ambiguity comparison failed")
+            return {}, {}
+        if len(selected_source_ids) < 2:
+            return {}, {}
+
+        selected_groups = {
+            source_id: groups[source_id]
+            for source_id in selected_source_ids
+            if source_id in groups
+        }
+        selected_labels = {
+            source_id: labels[source_id]
+            for source_id in selected_groups
+        }
+        if len(selected_groups) < 2:
+            return {}, {}
+        return selected_groups, selected_labels
+
+    def expand_selected_source_chunks(
+        channel_id: int,
+        selected_chunks: list[RetrievedChunk],
+    ) -> list[RetrievedChunk]:
+        expanded: list[RetrievedChunk] = []
+        seen_chunk_ids: set[str] = set()
+
+        for chunk in selected_chunks:
+            expanded.append(chunk)
+            seen_chunk_ids.add(chunk.chunk_id)
+            if len(expanded) >= MAX_SELECTED_SOURCE_CHUNKS:
+                return expanded
+
+        for chunk in context.chunk_repository.list_for_channel(channel_id):
+            if chunk.chunk_id in seen_chunk_ids:
+                continue
+            expanded.append(
+                RetrievedChunk(
+                    chunk_id=chunk.chunk_id,
+                    text=chunk.chunk_text,
+                    similarity=0.0,
+                )
+            )
+            seen_chunk_ids.add(chunk.chunk_id)
+            if len(expanded) >= MAX_SELECTED_SOURCE_CHUNKS:
+                break
+
+        return expanded
+
     @bot.command(name="sync")
     async def sync_command(ctx: commands.Context) -> None:
         if not await ensure_allowed(ctx):
@@ -182,18 +419,18 @@ def create_bot(context: AppContext) -> commands.Bot:
             await ctx.reply("A sync is already running.", mention_author=False)
             return
         async with sync_lock:
-            await ctx.reply("Starting full sync of configured channels.", mention_author=False)
             try:
                 report = await context.sync_service.full_sync(bot)
             except RuntimeError as exc:
                 logger.error("Full sync failed: %s", exc)
-                await ctx.reply(str(exc), mention_author=False)
+                await ctx.reply("Full sync failed. Check local logs for details.", mention_author=False)
                 return
             except Exception:
                 logger.exception("Full sync failed")
                 await ctx.reply("Full sync failed. Check local logs for details.", mention_author=False)
                 return
-            await send_chunks(ctx, format_sync_report(report))
+            log_sync_report(report)
+            await ctx.reply("Full sync completed.", mention_author=False)
 
     @bot.tree.command(
         name="sync",
@@ -212,13 +449,14 @@ def create_bot(context: AppContext) -> commands.Bot:
                 report = await context.sync_service.full_sync(bot)
             except RuntimeError as exc:
                 logger.error("Full sync failed: %s", exc)
-                await interaction.followup.send(str(exc))
+                await interaction.followup.send("Full sync failed. Check local logs for details.")
                 return
             except Exception:
                 logger.exception("Full sync failed")
                 await interaction.followup.send("Full sync failed. Check local logs for details.")
                 return
-            await send_interaction_chunks(interaction, format_sync_report(report))
+            log_sync_report(report)
+            await interaction.followup.send("Full sync completed.")
 
     @bot.command(name="resync")
     async def resync_command(ctx: commands.Context) -> None:
@@ -228,12 +466,14 @@ def create_bot(context: AppContext) -> commands.Bot:
             await ctx.reply("A sync is already running.", mention_author=False)
             return
         async with sync_lock:
-            await ctx.reply("Starting incremental sync.", mention_author=False)
             try:
                 report = await context.sync_service.incremental_sync(bot)
             except RuntimeError as exc:
                 logger.error("Incremental sync failed: %s", exc)
-                await ctx.reply(str(exc), mention_author=False)
+                await ctx.reply(
+                    "Incremental sync failed. Check local logs for details.",
+                    mention_author=False,
+                )
                 return
             except Exception:
                 logger.exception("Incremental sync failed")
@@ -242,7 +482,8 @@ def create_bot(context: AppContext) -> commands.Bot:
                     mention_author=False,
                 )
                 return
-            await send_chunks(ctx, format_sync_report(report))
+            log_sync_report(report)
+            await ctx.reply("Incremental sync completed.", mention_author=False)
 
     @bot.tree.command(
         name="resync",
@@ -261,7 +502,9 @@ def create_bot(context: AppContext) -> commands.Bot:
                 report = await context.sync_service.incremental_sync(bot)
             except RuntimeError as exc:
                 logger.error("Incremental sync failed: %s", exc)
-                await interaction.followup.send(str(exc))
+                await interaction.followup.send(
+                    "Incremental sync failed. Check local logs for details."
+                )
                 return
             except Exception:
                 logger.exception("Incremental sync failed")
@@ -269,7 +512,8 @@ def create_bot(context: AppContext) -> commands.Bot:
                     "Incremental sync failed. Check local logs for details."
                 )
                 return
-            await send_interaction_chunks(interaction, format_sync_report(report))
+            log_sync_report(report)
+            await interaction.followup.send("Incremental sync completed.")
 
     @bot.command(name="ask")
     async def ask_command(ctx: commands.Context, *, question: str = "") -> None:
@@ -285,7 +529,13 @@ def create_bot(context: AppContext) -> commands.Bot:
             logger.exception("Question answering failed")
             await ctx.reply(REFUSAL_MESSAGE, mention_author=False)
             return
-        await send_chunks(ctx, format_rag_answer(answer))
+        if answer.refused and answer.retrieved_chunks:
+            await send_chunks(
+                ctx,
+                format_source_excerpts("retrieved notes", answer.retrieved_chunks),
+            )
+        else:
+            await send_chunks(ctx, format_rag_answer(answer))
 
     @bot.tree.command(
         name="ask",
@@ -302,12 +552,11 @@ def create_bot(context: AppContext) -> commands.Bot:
             await interaction.followup.send("Question cannot be empty.")
             return
         try:
-            answer = await asyncio.to_thread(context.rag_pipeline.answer_question, question)
+            await answer_or_select_source(interaction, question)
         except Exception:
             logger.exception("Question answering failed")
             await interaction.followup.send(REFUSAL_MESSAGE)
             return
-        await send_interaction_chunks(interaction, format_rag_answer(answer))
 
     @bot.tree.command(
         name="debugretrieve",
@@ -345,7 +594,13 @@ def create_bot(context: AppContext) -> commands.Bot:
             logger.exception("Channel question answering failed")
             await ctx.reply(REFUSAL_MESSAGE, mention_author=False)
             return
-        await send_chunks(ctx, format_rag_answer(answer))
+        if answer.refused and answer.retrieved_chunks:
+            await send_chunks(
+                ctx,
+                format_source_excerpts(f"#{channel.name}", answer.retrieved_chunks),
+            )
+        else:
+            await send_chunks(ctx, format_rag_answer(answer))
 
     @bot.tree.command(
         name="askchannel",
@@ -378,7 +633,13 @@ def create_bot(context: AppContext) -> commands.Bot:
             logger.exception("Channel question answering failed")
             await interaction.followup.send(REFUSAL_MESSAGE)
             return
-        await send_interaction_chunks(interaction, format_rag_answer(answer))
+        if answer.refused and answer.retrieved_chunks:
+            await send_interaction_chunks(
+                interaction,
+                format_source_excerpts(f"#{channel.name}", answer.retrieved_chunks),
+            )
+        else:
+            await send_interaction_chunks(interaction, format_rag_answer(answer))
 
     @bot.tree.command(
         name="find",
@@ -552,7 +813,7 @@ def create_bot(context: AppContext) -> commands.Bot:
                 "**Commands**",
                 "`/sync` - full sync visible note sources",
                 "`/resync` - sync only new Discord notes",
-                "`/ask question:<question>` - answer from all synced notes",
+                "`/ask question:<question>` - answer from notes; may ask you to pick a matching source",
                 "`/askchannel channel:#channel question:<question>` - answer from one text channel",
                 "`/find query:<words> scope:<optional>` - exact keyword search",
                 "`/quiz scope:<category-or-source> topic:<optional>` - source-grounded quiz",

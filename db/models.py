@@ -65,6 +65,7 @@ class ChunkState:
 @dataclass(frozen=True)
 class SourceReference:
     chunk_id: str
+    channel_id: int
     channel_name: str
     category_name: str | None
     timestamp: str
