@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from db.models import ChunkRecord, NoteSource, SourceReference
 from db.repositories import ChunkRepository, MessageRepository
 from rag.answer_generator import AnswerGenerator
-from utils.text import shorten
+from utils.text import display_excerpt, display_quote, display_text, shorten
 
 
 @dataclass(frozen=True)
@@ -271,24 +271,26 @@ def format_find_results(results: list[FindResult]) -> str:
             f"{index}. {source_name}\n"
             f"   {result.timestamp}\n"
             f"   {result.message_url}\n"
-            f"   `{result.snippet}`"
+            f"   > {display_excerpt(result.snippet, 360)}"
         )
-    return "\n".join(lines)
+    return "\n\n".join(lines)
 
 
 def format_quiz(cards: list[StudyCard]) -> str:
     if not cards:
         return "No synced notes were found for that quiz request."
 
-    lines = ["**Quiz**", "Answer from memory, then check the hidden source excerpts."]
+    lines = ["**Quiz**", "Answer from memory, then check the hidden source excerpts.", ""]
     for index, card in enumerate(cards, start=1):
-        lines.append(f"{index}. {card.question}")
+        lines.append(f"{index}. {display_text(card.question, 500)}")
     lines.append("")
     lines.append("**Answer key**")
     for index, card in enumerate(cards, start=1):
         source = _format_source(card.source)
-        lines.append(f"{index}. ||{shorten(card.answer, 500)}||{source}")
-    return "\n".join(lines)
+        lines.append(
+            f"{index}. ||{display_excerpt(card.answer, 650)}||{source}"
+        )
+    return "\n\n".join(lines)
 
 
 def format_summary(cards: list[StudyCard], scope_label: str) -> str:
@@ -301,23 +303,23 @@ def format_summary(cards: list[StudyCard], scope_label: str) -> str:
     ]
     for index, card in enumerate(cards, start=1):
         source = _format_source(card.source)
-        lines.append(f"{index}. {shorten(card.answer, 500)}{source}")
-    return "\n".join(lines)
+        lines.append(f"{index}.\n{display_quote(card.answer, 700)}{source}")
+    return "\n\n".join(lines)
 
 
 def format_flashcard(card: StudyCard, index: int, total: int) -> str:
-    return f"**Flashcard {index}/{total}**\n{card.question}"
+    return f"**Flashcard {index}/{total}**\n\n{display_text(card.question, 700)}"
 
 
 def format_flashcard_answer(card: StudyCard, user_answer: str, feedback: str) -> str:
     source = _format_source(card.source)
     return (
         "**Your answer**\n"
-        f"{shorten(user_answer, 700)}\n\n"
+        f"{display_text(user_answer, 700)}\n\n"
         "**Comparison**\n"
-        f"{shorten(feedback, 900)}\n\n"
+        f"{display_text(feedback, 900)}\n\n"
         "**Source answer**\n"
-        f"{shorten(card.answer, 900)}{source}"
+        f"{display_quote(card.answer, 900)}{source}"
     )
 
 
@@ -367,7 +369,7 @@ def _make_question(
 def _format_source(source: SourceReference | None) -> str:
     if source is None:
         return ""
-    return f"\n   Source: {_source_label(source)} {source.timestamp}\n   {source.message_url}"
+    return f"\nSource: {_source_label(source)}\n{source.timestamp}\n{source.message_url}"
 
 
 def _source_label(source: SourceReference | None) -> str:

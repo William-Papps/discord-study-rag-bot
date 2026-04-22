@@ -4,7 +4,7 @@ from db.models import StatusReport
 from rag.retriever import RAGAnswer
 from rag.retriever import RetrievedChunk
 from services.sync_service import SyncRunReport
-from utils.text import shorten
+from utils.text import display_excerpt, display_quote, display_text
 
 
 DISCORD_MESSAGE_LIMIT = 1900
@@ -86,7 +86,7 @@ def format_rag_answer(answer: RAGAnswer) -> str:
 
     lines = [
         "**Answer**",
-        answer.answer.strip(),
+        display_text(answer.answer, max_chars=1200),
     ]
     if answer.sources:
         lines.extend(["", "**Best sources**"])
@@ -100,7 +100,7 @@ def format_rag_answer(answer: RAGAnswer) -> str:
                 f"{index}. {source_name}\n"
                 f"   {source.timestamp}\n"
                 f"   {source.message_url}\n"
-                f"   `{shorten(source.snippet, 160)}`"
+                f"   > {display_excerpt(source.snippet, 220)}"
             )
     return "\n".join(lines)
 
@@ -113,7 +113,7 @@ def format_retrieved_chunks(chunks: list[RetrievedChunk]) -> str:
     for index, chunk in enumerate(chunks, start=1):
         lines.append(
             f"{index}. similarity={chunk.similarity:.3f} chunk={chunk.chunk_id}\n"
-            f"{shorten(chunk.text, 500)}"
+            f"{display_text(chunk.text, 700)}"
         )
     return "\n\n".join(lines)
 
@@ -127,5 +127,5 @@ def format_source_excerpts(source_label: str, chunks: list[RetrievedChunk]) -> s
         "Relevant stored excerpts:",
     ]
     for index, chunk in enumerate(chunks[:5], start=1):
-        lines.append(f"{index}. {shorten(chunk.text, 700)}")
+        lines.append(f"{index}.\n{display_quote(chunk.text, 900)}")
     return "\n\n".join(lines)
