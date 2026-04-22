@@ -113,6 +113,55 @@ The bot will connect to Discord and be ready to answer from previously indexed l
 
 If your notes are screenshots or photos, keep `IMAGE_TEXT_PROVIDER=openai`. During `/sync`, the bot transcribes supported image attachments and stores that text locally with the Discord message before chunking and embedding.
 
+## Running 24/7 on a Home PC
+
+Use your laptop for development and your home PC as the always-on bot host. Keep the hosted copy outside OneDrive, for example:
+
+```powershell
+mkdir C:\Bots
+cd C:\Bots
+git clone https://github.com/William-Papps/discord-study-rag-bot.git
+cd C:\Bots\discord-study-rag-bot
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+copy .env.example .env
+notepad .env
+```
+
+Fill `.env` on the home PC with your real Discord bot token, OpenAI key, server ID, and ignored channel IDs. Do not commit `.env`, `data/messages.db`, or `data/chroma`.
+
+Test manually first:
+
+```powershell
+.\.venv\Scripts\python.exe main.py
+```
+
+If the bot connects, stop it with `Ctrl+C`, then register the Windows Scheduled Task from an Administrator PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\register-scheduled-task.ps1
+```
+
+This creates and starts a task named `DiscordStudyBot` that runs at Windows startup and restarts if it crashes.
+
+After making changes on your laptop:
+
+```powershell
+git add .
+git commit -m "Describe the change"
+git push origin main
+```
+
+Then remote into the home PC with Chrome Remote Desktop and run:
+
+```powershell
+cd C:\Bots\discord-study-rag-bot
+powershell -ExecutionPolicy Bypass -File .\scripts\update-and-restart.ps1
+```
+
+That stops the scheduled task, pulls the latest GitHub changes, installs any new requirements, and starts the bot again.
+
 ## Discord Commands
 
 - `/sync`  
