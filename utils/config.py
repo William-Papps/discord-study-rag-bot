@@ -80,6 +80,7 @@ class Settings:
     answer_provider: str
     image_text_provider: str
     openai_api_key: str | None
+    openai_project_id: str | None
     openai_embedding_model: str
     openai_answer_model: str
     openai_vision_model: str
@@ -93,7 +94,7 @@ class Settings:
 
 
 def load_settings(env_file: str | Path | None = None) -> Settings:
-    load_dotenv(env_file)
+    load_dotenv(env_file, override=True)
 
     token = os.getenv("DISCORD_BOT_TOKEN", "").strip()
     sync_all_visible = _bool_env("DISCORD_SYNC_ALL_VISIBLE_CHANNELS", True)
@@ -128,6 +129,7 @@ def load_settings(env_file: str | Path | None = None) -> Settings:
         answer_provider=os.getenv("ANSWER_PROVIDER", "openai").strip().lower(),
         image_text_provider=os.getenv("IMAGE_TEXT_PROVIDER", "openai").strip().lower(),
         openai_api_key=os.getenv("OPENAI_API_KEY"),
+        openai_project_id=_optional_env("OPENAI_PROJECT_ID"),
         openai_embedding_model=os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small").strip(),
         openai_answer_model=os.getenv("OPENAI_ANSWER_MODEL", "gpt-4o-mini").strip(),
         openai_vision_model=os.getenv("OPENAI_VISION_MODEL", "gpt-4o-mini").strip(),
@@ -154,3 +156,10 @@ def _validate(settings: Settings) -> None:
     if missing:
         unique = sorted(set(missing))
         raise RuntimeError(f"Missing required configuration: {', '.join(unique)}")
+
+
+def _optional_env(name: str) -> str | None:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return None
+    return raw.strip()

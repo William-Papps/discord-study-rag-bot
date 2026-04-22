@@ -19,8 +19,8 @@ class EmbeddingProvider(ABC):
 
 
 class OpenAIEmbeddingProvider(EmbeddingProvider):
-    def __init__(self, api_key: str, model: str) -> None:
-        self.client = OpenAI(api_key=api_key)
+    def __init__(self, api_key: str, model: str, project_id: str | None = None) -> None:
+        self.client = OpenAI(api_key=api_key, project=project_id)
         self.model = model
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
@@ -69,6 +69,7 @@ def create_embedding_provider(settings: Settings) -> EmbeddingProvider:
         return OpenAIEmbeddingProvider(
             api_key=settings.openai_api_key,
             model=settings.openai_embedding_model,
+            project_id=settings.openai_project_id,
         )
     if settings.embedding_provider == "local_hash":
         return LocalHashEmbeddingProvider()

@@ -33,8 +33,14 @@ class NoopAttachmentTextService(AttachmentTextService):
 
 
 class OpenAIAttachmentTextService(AttachmentTextService):
-    def __init__(self, api_key: str, model: str, max_attachment_bytes: int) -> None:
-        self.client = OpenAI(api_key=api_key)
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        max_attachment_bytes: int,
+        project_id: str | None = None,
+    ) -> None:
+        self.client = OpenAI(api_key=api_key, project=project_id)
         self.model = model
         self.max_attachment_bytes = max_attachment_bytes
         self._disabled_reason: str | None = None
@@ -127,5 +133,6 @@ def create_attachment_text_service(settings: Settings) -> AttachmentTextService:
             api_key=settings.openai_api_key,
             model=settings.openai_vision_model,
             max_attachment_bytes=settings.max_attachment_bytes,
+            project_id=settings.openai_project_id,
         )
     raise RuntimeError(f"Unsupported IMAGE_TEXT_PROVIDER: {settings.image_text_provider}")

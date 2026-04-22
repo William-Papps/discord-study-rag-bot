@@ -76,8 +76,8 @@ class AnswerGenerator(ABC):
 
 
 class OpenAIAnswerGenerator(AnswerGenerator):
-    def __init__(self, api_key: str, model: str) -> None:
-        self.client = OpenAI(api_key=api_key)
+    def __init__(self, api_key: str, model: str, project_id: str | None = None) -> None:
+        self.client = OpenAI(api_key=api_key, project=project_id)
         self.model = model
 
     def generate(self, question: str, contexts: list[AnswerContext]) -> GeneratedAnswer:
@@ -314,6 +314,7 @@ def create_answer_generator(settings: Settings) -> AnswerGenerator:
         return OpenAIAnswerGenerator(
             api_key=settings.openai_api_key,
             model=settings.openai_answer_model,
+            project_id=settings.openai_project_id,
         )
     if settings.answer_provider == "extractive":
         return ExtractiveAnswerGenerator()
