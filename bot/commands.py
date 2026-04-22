@@ -679,27 +679,30 @@ def create_bot(context: AppContext) -> commands.Bot:
 
     @bot.tree.command(
         name="quiz",
-        description="Create source-grounded revision questions from a category or source.",
+        description="Create source-grounded revision questions from a category, forum, or source.",
         guilds=app_command_guilds,
     )
     @app_commands.describe(
-        scope="Category/thread/forum name, for example DES502",
+        scope="Category, forum, thread, or source name, for example DES502",
+        forum="Optional forum channel to quiz from",
         topic="Optional topic or keyword to focus on",
         count="Number of questions, from 1 to 10",
     )
     async def quiz_slash(
         interaction: discord.Interaction,
-        scope: str,
+        scope: str = "",
+        forum: discord.ForumChannel | None = None,
         topic: str = "",
         count: app_commands.Range[int, 1, 10] = 5,
     ) -> None:
         if not await ensure_interaction_allowed(interaction):
             return
         await interaction.response.defer(thinking=True)
+        selected_scope = forum.name if forum is not None else scope
         try:
             _, cards = await asyncio.to_thread(
                 context.study_service.make_quiz,
-                scope,
+                selected_scope,
                 topic.strip(),
                 int(count),
             )
@@ -816,7 +819,7 @@ def create_bot(context: AppContext) -> commands.Bot:
                 "`/ask question:<question>` - answer from notes; may ask you to pick a matching source",
                 "`/askchannel channel:#channel question:<question>` - answer from one text channel",
                 "`/find query:<words> scope:<optional>` - exact keyword search",
-                "`/quiz scope:<category-or-source> topic:<optional>` - source-grounded quiz",
+                "`/quiz scope:<category-or-source> forum:<optional> topic:<optional>` - source-grounded quiz",
                 "`/flashcards scope:<category-or-source> topic:<optional>` - interactive flashcards",
                 "`/summarize scope:<category-or-source>` - direct excerpt summary",
                 "`/debugretrieve question:<question>` - inspect retrieved chunks",

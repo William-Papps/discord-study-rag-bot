@@ -129,7 +129,7 @@ class StudyService:
                     channel_ids=[source.channel_id for source in sources],
                     source_count=len(sources),
                 )
-            raise ValueError("Scope is required. Use a category like DES502 or a synced thread/forum name.")
+            raise ValueError("Scope is required. Use a category like DES502, a forum name, or a synced thread name.")
 
         normalized = _normalize(scope)
         if scope.isdigit():
@@ -143,6 +143,13 @@ class StudyService:
         ]
         if category_matches:
             return _category_scope(category_matches, category_matches[0].category_name or scope)
+
+        parent_matches = [
+            source for source in sources
+            if _source_parent_name(source) and _normalize(_source_parent_name(source) or "") == normalized
+        ]
+        if parent_matches:
+            return _parent_scope(parent_matches, _source_parent_name(parent_matches[0]) or scope)
 
         source_matches = [
             source for source in sources
@@ -161,6 +168,19 @@ class StudyService:
             return _category_scope(
                 [source for source in sources if source.category_name == category_name],
                 category_name or scope,
+            )
+
+        partial_parents = {
+            parent_name
+            for source in sources
+            for parent_name in [_source_parent_name(source)]
+            if parent_name and normalized in _normalize(parent_name)
+        }
+        if len(partial_parents) == 1:
+            parent_name = next(iter(partial_parents))
+            return _parent_scope(
+                [source for source in sources if _source_parent_name(source) == parent_name],
+                parent_name,
             )
 
         partial_sources = [
@@ -374,6 +394,20 @@ def _category_scope(sources: list[NoteSource], category_name: str) -> StudyScope
     )
 
 
+def _parent_scope(sources: list[NoteSource], parent_name: str) -> StudyScope:
+    return StudyScope(
+        label=f"source group {parent_name}",
+        channel_ids=[source.channel_id for source in sources],
+        source_count=len(sources),
+    )
+
+
+def _source_parent_name(source: NoteSource) -> str | None:
+    if " / " not in source.channel_name:
+        return None
+    return source.channel_name.split(" / ", 1)[0].strip() or None
+
+
 def _normalize(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
 
@@ -383,7 +417,14 @@ def _scope_suggestions(sources: list[NoteSource]) -> str:
     for source in sources:
         if source.category_name and source.category_name not in categories:
             categories.append(source.category_name)
-    examples = categories[:3] or [source.channel_name for source in sources[:3]]
+    parents = []
+    for source in sources:
+        parent_name = _source_parent_name(source)
+        if parent_name and parent_name not in parents:
+            parents.append(parent_name)
+    examples = categories[:2] + parents[:2]
+    if not examples:
+        examples = [source.channel_name for source in sources[:3]]
     return ", ".join(examples) if examples else "sync notes first"
 
 

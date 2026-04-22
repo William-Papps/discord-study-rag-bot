@@ -179,8 +179,8 @@ That stops the scheduled task, pulls the latest GitHub changes, installs any new
 - `/find query:<words> scope:<optional> limit:<number>`  
   Searches synced note text directly and returns exact matching snippets with source links. Scope can be a Discord category such as `DES502`, a forum/thread name, or a synced source ID. If omitted, all synced notes are searched.
 
-- `/quiz scope:<category-or-source> topic:<optional> count:<number>`  
-  Creates revision questions from exact synced note excerpts in one category, forum post, thread, or text channel. Answers are hidden behind Discord spoiler text and use exact source excerpts.
+- `/quiz scope:<category-or-source> forum:<optional> topic:<optional> count:<number>`
+  Creates revision questions from exact synced note excerpts in one category, selected forum channel, forum post, thread, or text channel. Answers are hidden behind Discord spoiler text and use exact source excerpts.
 
 - `/flashcards scope:<category-or-source> topic:<optional> count:<number>`  
   Starts an interactive flashcard session. The bot asks a question based on an exact source excerpt; you submit your answer first, then it compares your answer to the source and privately reveals the exact source answer.
