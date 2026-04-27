@@ -7,6 +7,7 @@ from db.repositories import ChunkRepository
 from rag.answer_generator import AnswerContext, AnswerGenerator, REFUSAL_MESSAGE
 from rag.embeddings import EmbeddingProvider
 from rag.vector_store import ChromaVectorStore
+from utils.time_scope import chunk_overlaps_time_scope, parse_time_scope
 
 
 @dataclass(frozen=True)
@@ -39,9 +40,11 @@ class Retriever:
 
     def retrieve(self, question: str, channel_id: int | None = None) -> list[RetrievedChunk]:
         query_embedding = self.embedding_provider.embed_query(question)
+        time_scope = parse_time_scope(question)
+        top_k = self.top_k if time_scope is None else max(self.top_k * 10, 50)
         results = self.vector_store.query(
             query_embedding=query_embedding,
-            top_k=self.top_k,
+            top_k=top_k,
             channel_id=channel_id,
         )
         return [
@@ -52,7 +55,12 @@ class Retriever:
             )
             for result in results
             if result.similarity >= self.min_similarity
-        ]
+            and chunk_overlaps_time_scope(
+                str(result.metadata.get("first_timestamp") or ""),
+                str(result.metadata.get("last_timestamp") or ""),
+                time_scope,
+            )
+        ][: self.top_k]
 
 
 class RAGPipeline:

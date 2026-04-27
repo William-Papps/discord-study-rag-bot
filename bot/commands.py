@@ -828,6 +828,7 @@ def create_bot(context: AppContext) -> commands.Bot:
                 "`/reindex` - rebuild chunks and vectors from local SQLite",
                 "",
                 "For `scope`, use a category like `DES502`, a forum/thread name, or a synced source ID.",
+                "For `/ask`, time phrases like `today`, `yesterday`, `last week`, or `over the weekend` narrow retrieval to that period.",
             ]
         )
         await send_interaction_chunks(interaction, text)
